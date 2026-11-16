@@ -1,13 +1,17 @@
 /*
- * Librería — Global de Programación III.
+ * Librería — Parcial 1.
  * Módulo: js/vistas/catalogo-fichas.js
- * Responsabilidad: construir la ficha de un libro del catálogo usando datos de la API.
+ * Responsabilidad: construir la ficha de un libro del catálogo y resolver los
+ * nombres de editorial, género y autores a partir del store.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria.
  *
- * La respuesta de la API incluye: editorial_nombre, genero_nombre, autores[]
- * Si el género es nulo, se muestra «Sin clasificar».
+ * C-08: la ficha se arma con createElement y textContent, nunca con markup
+ * (RN-DAT-05), y nunca con contenido fijo: todo sale del libro recibido
+ * (RN-CAT-01). Las relaciones se resuelven por id contra el store; si una
+ * relación no existe, se muestra un texto alternativo en lugar de romper la
+ * vista.
  */
 (function () {
   'use strict';
@@ -23,27 +27,33 @@
     return valor === null || valor === undefined ? '' : String(valor);
   }
 
-  /** Nombre de la editorial del libro (viene en libro.editorial_nombre de la API). */
+  /** Nombre de la editorial del libro, o un texto alternativo si no existe. */
   function nombreEditorial(libro) {
-    var nombre = libro.editorial_nombre ? texto(libro.editorial_nombre).trim() : '';
+    var datos = window.Libreria.datos;
+    var editorial = datos ? datos.obtenerEditorial(libro.editorialId) : null;
+    var nombre = editorial ? texto(editorial.nombre).trim() : '';
     return nombre === '' ? TEXTO_SIN_EDITORIAL : nombre;
   }
 
-  /** Nombre del género del libro (viene en libro.genero_nombre de la API). */
+  /** Nombre del género del libro, o null si el libro no tiene género. */
   function nombreGenero(libro) {
-    if (!libro.genero_nombre) {
+    if (!libro.generoId) {
       return null;
     }
-    var nombre = texto(libro.genero_nombre).trim();
+    var datos = window.Libreria.datos;
+    var genero = datos ? datos.obtenerGenero(libro.generoId) : null;
+    var nombre = genero ? texto(genero.nombre).trim() : '';
     return nombre === '' ? null : nombre;
   }
 
-  /** Nombres de los autores del libro (viene en libro.autores[] de la API). */
+  /** Nombres de los autores del libro, en el orden en que los declara. */
   function nombresAutores(libro) {
-    var autores = Array.isArray(libro.autores) ? libro.autores : [];
-    var nombres = autores
-      .map(function (a) {
-        return a && a.autor_nombre ? texto(a.autor_nombre).trim() : '';
+    var datos = window.Libreria.datos;
+    var ids = Array.isArray(libro.autorIds) ? libro.autorIds : [];
+    var nombres = ids
+      .map(function (id) {
+        var autor = datos ? datos.obtenerAutor(id) : null;
+        return autor ? texto(autor.nombre).trim() : '';
       })
       .filter(function (nombre) {
         return nombre !== '';
@@ -74,7 +84,8 @@
 
   /**
    * Crea la ficha de un libro: título, ISBN, editorial, género, autores y
-   * precio. Un libro sin género muestra el badge «Sin clasificar».
+   * precio. Un libro sin género muestra el badge «Sin clasificar»
+   * (RN-CAT-04, US-011).
    */
   function crearFicha(libro) {
     if (!libro) {

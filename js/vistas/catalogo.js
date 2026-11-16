@@ -1,15 +1,21 @@
 /*
- * Librería — Global de Programación III.
+ * Librería — Parcial 1.
  * Módulo: js/vistas/catalogo.js
- * Responsabilidad: render y eventos de la vista Catálogo usando API.
+ * Responsabilidad: render y eventos de la vista Catálogo.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria, dentro de Libreria.vistas.
  *
- * C-08: la grilla se genera desde la API, con paginación limit/offset.
- * Cada ficha muestra título, ISBN, editorial, género, autores y precio.
- * El buscador por título filtra enviando la consulta a la API.
- * Estados: carga, catálogo vacío, búsqueda sin coincidencias, error de conexión.
+ * C-08: la grilla se genera desde el store, nunca desde HTML fijo (RN-CAT-01);
+ * cada ficha muestra título, ISBN, editorial, género, autores y precio. El
+ * buscador por título filtra en vivo y al enviar el formulario, con
+ * preventDefault, trim() y coincidencia parcial (RN-CAT-02). Los estados de
+ * "catálogo vacío" y "búsqueda sin coincidencias" son distintos y explícitos
+ * (RN-CAT-04).
+ *
+ * El texto de la búsqueda es estado privado de este módulo: sobrevive a
+ * alCambiarElStore() y no es estado global (RN-LIB-05). Las escuchas viven en
+ * los nodos que crea el render, así que no se acumulan entre montajes.
  */
 (function () {
   'use strict';
@@ -21,29 +27,20 @@
   var CLASE_GRILLA = 'grilla-catalogo';
   var CLASE_ITEM = 'grilla-catalogo__item';
   var CLASE_CONSEO = 'vista-catalogo__conteo';
-  var CLASE_PAGINACION = 'vista-catalogo__paginacion';
 
   var MENSAJE_CATALOGO_VACIO =
-    'El catálogo todavía no tiene libros cargados.';
+    'El catálogo todavía no tiene libros cargados. Cuando des de alta un título ' +
+    'desde la vista Libros, va a aparecer acá.';
   var PREFIJO_SIN_COINCIDENCIAS = 'No se encontraron libros para "';
   var SUFIJO_SIN_COINCIDENCIAS = '"';
-  var MENSAJE_ERROR_CONEXION =
-    'No se pudo cargar el catálogo. Verificá tu conexión e intentá de nuevo.';
 
-  // Estado privado del módulo
+  /* Estado privado del módulo: la última búsqueda y los nodos de la vista. */
   var consulta = '';
-  var paginaActual = 1;
-  var tamanoPagina = 20;
-  var totalLibros = 0;
-  var totalPaginas = 1;
-  var cargando = false;
-
   var nodoRegion = null;
   var nodoResultados = null;
   var nodoMensaje = null;
-  var nodoPaginacion = null;
 
-  /** Quita el mensaje de estado propio. */
+  /** Quita el mensaje de estado propio, sin tocar los mensajes ajenos. */
   function quitarMensaje() {
     if (nodoMensaje && nodoMensaje.parentNode) {
       nodoMensaje.parentNode.removeChild(nodoMensaje);
@@ -51,59 +48,17 @@
     nodoMensaje = null;
   }
 
-  /** Escribe un mensaje de estado en la región de mensajes. */
-  function mostrarMensaje(textoMensaje, tipo) {
+  /** Escribe un mensaje de estado en la región de mensajes de la vista. */
+  function mostrarMensaje(textoMensaje) {
     quitarMensaje();
-    if (!nodoRegion) return null;
-    nodoMensaje = window.Libreria.ui.mostrarMensaje(nodoRegion, textoMensaje, tipo || 'aviso');
+    if (!nodoRegion) {
+      return null;
+    }
+    nodoMensaje = window.Libreria.ui.mostrarMensaje(nodoRegion, textoMensaje, 'vacio');
     return nodoMensaje;
   }
 
-  /** Crea controles de paginación (Anterior / Siguiente). */
-  function crearPaginacion() {
-    var contenedor = document.createElement('div');
-    contenedor.className = CLASE_PAGINACION;
-    contenedor.setAttribute('role', 'navigation');
-    contenedor.setAttribute('aria-label', 'Paginación del catálogo');
-
-    var btnAnterior = document.createElement('button');
-    btnAnterior.type = 'button';
-    btnAnterior.className = 'boton boton--secundario paginacion__boton';
-    btnAnterior.textContent = 'Anterior';
-    btnAnterior.disabled = paginaActual <= 1;
-    btnAnterior.setAttribute('aria-disabled', paginaActual <= 1);
-    btnAnterior.addEventListener('click', function () {
-      if (paginaActual > 1) {
-        paginaActual--;
-        cargarYRenderizar();
-      }
-    });
-
-    var info = document.createElement('span');
-    info.className = 'paginacion__info';
-    info.textContent = 'Página ' + paginaActual + ' de ' + totalPaginas;
-
-    var btnSiguiente = document.createElement('button');
-    btnSiguiente.type = 'button';
-    btnSiguiente.className = 'boton boton--secundario paginacion__boton';
-    btnSiguiente.textContent = 'Siguiente';
-    btnSiguiente.disabled = paginaActual >= totalPaginas;
-    btnSiguiente.setAttribute('aria-disabled', paginaActual >= totalPaginas);
-    btnSiguiente.addEventListener('click', function () {
-      if (paginaActual < totalPaginas) {
-        paginaActual++;
-        cargarYRenderizar();
-      }
-    });
-
-    contenedor.appendChild(btnAnterior);
-    contenedor.appendChild(info);
-    contenedor.appendChild(btnSiguiente);
-
-    return contenedor;
-  }
-
-  /** Grilla de fichas a partir de los libros recibidos. */
+  /** Grilla de fichas a partir de los libros ya filtrados. */
   function crearGrilla(libros) {
     var grilla = document.createElement('ul');
     grilla.className = CLASE_GRILLA;
@@ -118,7 +73,7 @@
     return grilla;
   }
 
-  /** Resumen de resultados. */
+  /** Resumen de resultados: "6 libros en el catálogo" o "2 de 6 libros". */
   function textoConsejo(cantidad, total) {
     if (cantidad === total) {
       return cantidad === 1 ? '1 libro en el catálogo' : cantidad + ' libros en el catálogo';
@@ -126,104 +81,66 @@
     return 'Se muestran ' + cantidad + ' de ' + total + ' libros';
   }
 
-  /** Carga libros desde la API y renderiza. */
-  async function cargarYRenderizar() {
-    if (cargando) return;
-    cargando = true;
+  /**
+   * Pinta la grilla y el estado de la vista a partir del store. Es idempotente:
+   * vacía el contenedor de resultados antes de escribir, así que no duplica
+   * nodos. El orden de los libros lo trae el store (SU-02).
+   */
+  function pintarResultados() {
+    if (!nodoResultados) {
+      return false;
+    }
 
-    if (!nodoResultados) return;
-
-    // Limpiar resultados anteriores
     while (nodoResultados.firstChild) {
       nodoResultados.removeChild(nodoResultados.firstChild);
     }
+
+    var libros = window.Libreria.datos.listarLibros();
+    var busqueda = window.Libreria.ui.normalizarTitulo(consulta);
+
+    if (libros.length === 0) {
+      mostrarMensaje(MENSAJE_CATALOGO_VACIO);
+      return true;
+    }
+
+    var encontrados = busqueda === ''
+      ? libros
+      : libros.filter(function (libro) {
+          var titulo = window.Libreria.ui.normalizarTitulo(libro.titulo);
+          return titulo.indexOf(busqueda) !== -1;
+        });
+
+    if (encontrados.length === 0) {
+      mostrarMensaje(PREFIJO_SIN_COINCIDENCIAS + consulta + SUFIJO_SIN_COINCIDENCIAS);
+      return true;
+    }
+
     quitarMensaje();
 
-    // Mostrar loading
-    window.Libreria.api.mostrarCargando(nodoResultados);
+    var consejo = document.createElement('p');
+    consejo.className = CLASE_CONSEO;
+    consejo.textContent = textoConsejo(encontrados.length, libros.length);
+    nodoResultados.appendChild(consejo);
+    nodoResultados.appendChild(crearGrilla(encontrados));
 
-    try {
-      var respuesta = await window.Libreria.api.listarLibros({
-        page: paginaActual,
-        size: tamanoPagina,
-        titulo: consulta.trim() || undefined
-      });
-
-      window.Libreria.api.ocultarCargando(nodoResultados);
-
-      if (!respuesta.ok) {
-        throw new Error(respuesta.mensaje || 'Error al cargar catálogo');
-      }
-
-      var data = respuesta.data;
-      var libros = data.items || [];
-      totalLibros = data.total || 0;
-      totalPaginas = data.pages || 1;
-
-      // Validar página actual
-      if (paginaActual > totalPaginas && totalPaginas > 0) {
-        paginaActual = totalPaginas;
-        return cargarYRenderizar();
-      }
-
-      if (libros.length === 0 && totalLibros === 0) {
-        // Catálogo completamente vacío
-        mostrarMensaje(MENSAJE_CATALOGO_VACIO, 'vacio');
-      } else if (libros.length === 0) {
-        // Página sin resultados (búsqueda sin coincidencias)
-        if (consulta.trim()) {
-          mostrarMensaje(PREFIJO_SIN_COINCIDENCIAS + consulta + SUFIJO_SIN_COINCIDENCIAS, 'vacio');
-        } else {
-          mostrarMensaje('No hay libros en esta página.', 'vacio');
-        }
-      } else {
-        // Hay resultados
-        quitarMensaje();
-
-        var consejo = document.createElement('p');
-        consejo.className = CLASE_CONSEO;
-        consejo.textContent = textoConsejo(libros.length, totalLibros);
-        nodoResultados.appendChild(consejo);
-        nodoResultados.appendChild(crearGrilla(libros));
-
-        // Paginación solo si hay más de una página
-        if (totalPaginas > 1) {
-          if (nodoPaginacion && nodoPaginacion.parentNode) {
-            nodoPaginacion.parentNode.removeChild(nodoPaginacion);
-          }
-          nodoPaginacion = crearPaginacion();
-          nodoResultados.appendChild(nodoPaginacion);
-        } else if (nodoPaginacion && nodoPaginacion.parentNode) {
-          nodoPaginacion.parentNode.removeChild(nodoPaginacion);
-          nodoPaginacion = null;
-        }
-      }
-
-    } catch (err) {
-      window.Libreria.api.ocultarCargando(nodoResultados);
-      mostrarMensaje(MENSAJE_ERROR_CONEXION + ' (' + err.message + ')', 'error');
-    } finally {
-      cargando = false;
-    }
+    return true;
   }
 
-  /** Crea el buscador por título. */
+  /** Crea el buscador por título y conecta su estado con la vista. */
   function crearBuscador() {
     var buscador = window.Libreria.catalogoBuscador.crear({
       valor: consulta,
       alBuscar: function (texto) {
         consulta = texto;
-        paginaActual = 1; // Reiniciar paginación al buscar (según consigna)
-        cargarYRenderizar();
+        pintarResultados();
       },
       alCambiar: function (texto) {
-        // Opcional: búsqueda en vivo (debounce se puede agregar luego)
         consulta = texto;
+        pintarResultados();
       },
       alLimpiar: function () {
         consulta = '';
-        paginaActual = 1;
-        cargarYRenderizar();
+        pintarResultados();
       }
     });
 
@@ -231,6 +148,10 @@
   }
 
   window.Libreria.vistas.catalogo = {
+    /**
+     * Renderiza la vista Catálogo: devuelve el fragmento con el buscador y la
+     * grilla de libros. La sección ya trae su h1 y su región de mensajes.
+     */
     render: function (seccion) {
       var fragmento = document.createDocumentFragment();
 
@@ -242,16 +163,17 @@
       fragmento.appendChild(crearBuscador());
       fragmento.appendChild(nodoResultados);
 
-      // Cargar primera página
-      cargarYRenderizar();
+      pintarResultados();
 
       return fragmento;
     },
 
+    /**
+     * Repinta la grilla cuando cambia el store, sin tocar el texto del
+     * buscador y sin duplicar nodos (RN-LIB-05).
+     */
     alCambiarElStore: function () {
-      // Con API no usamos el store local, pero mantenemos la firma por compatibilidad
-      // Si se hace un alta de libro desde otra vista, recargar página actual
-      return cargarYRenderizar();
+      return pintarResultados();
     }
   };
 }());

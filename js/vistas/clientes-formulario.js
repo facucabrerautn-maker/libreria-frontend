@@ -1,13 +1,14 @@
 /*
- * Librería — Global de Programación III.
+ * Librería — Parcial 1.
  * Módulo: js/vistas/clientes-formulario.js
- * Responsabilidad: armar el formulario de alta de clientes, leer sus valores,
- * limpiarlo y enviar a POST /api/clientes/.
+ * Responsabilidad: armar el formulario de alta de clientes, leer sus valores
+ * y limpiarlo.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria.
  *
- * Valida client-side y maneja errores server-side (409 email duplicado, 422 validación).
+ * C-10: nombre completo en un solo campo (RN-CLI-01, P-07) y email con
+ * type="email". Los name coinciden con los campos de validarCliente().
  */
 (function () {
   'use strict';
@@ -67,17 +68,12 @@
     });
   }
 
-  function deshabilitarControles(formulario, deshabilitar) {
-    var controles = formulario.querySelectorAll('input, button');
-    Array.prototype.forEach.call(controles, function (c) {
-      c.disabled = deshabilitar;
-    });
-  }
-
   /** Arma el formulario de alta y engancha su submit a la vista. */
   function armarFormulario(alEnviar) {
     var formulario = document.createElement('form');
     formulario.className = CLASE_FORMULARIO;
+    // Los atributos HTML quedan como barrera declarativa; la validación con
+    // mensajes por campo la resuelve validarCliente() en el submit.
     formulario.setAttribute('novalidate', '');
 
     var titulo = document.createElement('h2');
@@ -101,41 +97,13 @@
     acciones.appendChild(boton);
     formulario.appendChild(acciones);
 
-    formulario.addEventListener('submit', async function (evento) {
+    formulario.addEventListener('submit', function (evento) {
       evento.preventDefault();
       if (typeof alEnviar === 'function') {
-        await alEnviar(leer(formulario), formulario, evento);
+        alEnviar(leer(formulario), formulario, evento);
       }
     });
-
     return formulario;
-  }
-
-  var nodoRegion = null;
-  var nodoListado = null;
-  var nodoMensaje = null;
-
-  function quitarMensaje() {
-    if (nodoMensaje && nodoMensaje.parentNode) {
-      nodoMensaje.parentNode.removeChild(nodoMensaje);
-    }
-    nodoMensaje = null;
-  }
-
-  function mostrarResultado(texto, tipo) {
-    quitarMensaje();
-    if (!nodoRegion) return null;
-    nodoMensaje = window.Libreria.ui.mostrarMensaje(nodoRegion, texto, tipo);
-    return nodoMensaje;
-  }
-
-  async function pintarListado() {
-    if (!nodoListado) return false;
-    while (nodoListado.firstChild) {
-      nodoListado.removeChild(nodoListado.firstChild);
-    }
-    nodoListado.appendChild(await window.Libreria.clientesListado.crear());
-    return true;
   }
 
   window.Libreria.clientesFormulario = {
@@ -152,11 +120,5 @@
         limpiar: function () { limpiar(formulario); }
       };
     }
-  };
-
-  // Exponer para que clientes.js pueda refrescar el listado
-  window.Libreria.clientesFormulario.refrescarListado = function (region, listado) {
-    nodoRegion = region;
-    nodoListado = listado;
   };
 }());
