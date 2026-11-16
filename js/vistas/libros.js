@@ -1,17 +1,15 @@
 /*
- * Librería — Parcial 1.
+ * Librería — Global de Programación III.
  * Módulo: js/vistas/libros.js
  * Responsabilidad: render y eventos de la vista Libros: formulario de alta,
- * validación, mensajes y listado de libros registrados.
+ * validación, mensajes y listado de libros registrados usando la API.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria, dentro de Libreria.vistas.
  *
- * C-09: el submit se intercepta con preventDefault y valida con validarLibro();
- * si hay errores no se escribe nada y cada error queda junto a su control. El
- * alta solo usa el store, que notifica y persiste solo (RN-LIB-05, RN-EX-04).
- * alCambiarElStore() repinta únicamente el listado, sin perder lo escrito en el
- * formulario ni duplicar nodos.
+ * El submit se intercepta con preventDefault, valida y llama a POST /api/libros/.
+ * Si hay errores (409, 422), se muestran junto a su control.
+ * El alta exitosa limpia el formulario, informa y refresca el listado (GET /api/libros/).
  */
 (function () {
   'use strict';
@@ -27,7 +25,6 @@
   var nodoRegion = null;
   var nodoListado = null;
   var nodoMensaje = null;
-  var limpiarFormulario = null;
 
   /** Quita el mensaje propio de la vista, sin tocar los mensajes ajenos. */
   function quitarMensaje() {
@@ -47,15 +44,15 @@
     return nodoMensaje;
   }
 
-  /** Repinta solo el listado desde el store, sin duplicar nodos. */
-  function pintarListado() {
+  /** Repinta solo el listado desde la API, sin duplicar nodos. */
+  async function pintarListado() {
     if (!nodoListado) {
       return false;
     }
     while (nodoListado.firstChild) {
       nodoListado.removeChild(nodoListado.firstChild);
     }
-    nodoListado.appendChild(window.Libreria.librosListado.crear());
+    nodoListado.appendChild(await window.Libreria.librosListado.crear());
     return true;
   }
 
@@ -65,15 +62,23 @@
 
   /**
    * Maneja el envío: limpia errores previos, valida y, si todo pasa, da de
-   * alta en el store, limpia el formulario, informa y refresca el listado.
+   * alta en la API, limpia el formulario, informa y refresca el listado.
    */
-  function alEnviar(contexto, formulario) {
+  async function alEnviar(contexto, formulario, evento) {
     var ui = window.Libreria.ui;
-    var datos = window.Libreria.datos;
 
     ui.limpiarErrores(nodoRegion, formulario);
 
-    var errores = window.Libreria.validaciones.validarLibro(datos, contexto);
+    // Validación client-side básica
+    var errores = [];
+    if (!contexto.titulo) errores.push({ campo: 'titulo', mensaje: 'El título es obligatorio.' });
+    if (!contexto.isbn) errores.push({ campo: 'isbn', mensaje: 'El ISBN es obligatorio.' });
+    var precio = parseFloat(contexto.precio);
+    if (!precio || precio <= 0) errores.push({ campo: 'precio', mensaje: 'El precio debe ser mayor a cero.' });
+    if (!contexto.editorialId) errores.push({ campo: 'editorialId', mensaje: 'Debés elegir una editorial.' });
+    var autores = contexto.autorIds || [];
+    if (autores.length === 0) errores.push({ campo: 'autorIds', mensaje: 'Debés elegir al menos un autor.' });
+
     if (errores.length > 0) {
       quitarMensaje();
       ui.mostrarErrores(nodoRegion, errores, { formulario: formulario });
@@ -81,18 +86,72 @@
       return false;
     }
 
-    var registro = datos.agregarLibro(contexto);
-    if (!registro) {
-      mostrarResultado(MENSAJE_FALLO, 'error');
-      return false;
+    // Deshabilitar botón durante envío
+    var boton = formulario.querySelector('button[type="submit"]');
+    if (boton) {
+      boton.disabled = true;
+      boton.textContent = 'Registrando...';
     }
 
-    if (limpiarFormulario) {
-      limpiarFormulario();
+    try {
+      // Preparar datos para API (formato que espera el backend)
+      var data = {
+        titulo: contexto.titulo,
+        isbn: contexto.isbn,
+        precio: parseFloat(contexto.precio),
+        stock_inicial: 0,
+        editorial_id: contexto.editorialId,
+        genero_id: contexto.generoId,
+        autores: autores.map(function (id, index) {
+          return { autor_id: id, rol: 'autor', orden: index + 1 };
+        })
+      };
+
+      var respuesta = await window.Libreria.api.crearLibro(data);
+
+      if (!respuesta.ok) {
+        if (respuesta.status === 409) {
+          // Conflicto: ISBN duplicado u otro
+          ui.mostrarErrores(nodoRegion, [{
+            campo: 'isbn',
+            mensaje: respuesta.mensaje || 'Ya existe un libro con ese ISBN.'
+          }], { formulario: formulario });
+        } else if (respuesta.status === 422) {
+          // Validación server-side
+          var det = respuesta.data;
+          if (det && det.detail && Array.isArray(det.detail)) {
+            var errs = det.detail.map(function (d) {
+              return { campo: d.loc && d.loc[d.loc.length - 1] || 'formulario', mensaje: d.msg };
+            });
+            ui.mostrarErrores(nodoRegion, errs, { formulario: formulario });
+          } else {
+            ui.mostrarErrores(nodoRegion, [{ campo: 'formulario', mensaje: respuesta.mensaje || 'Datos inválidos.' }], { formulario: formulario });
+          }
+        } else {
+          throw new Error(respuesta.mensaje || 'Error al registrar libro');
+        }
+        ui.enfocarPrimerError(formulario);
+        return false;
+      }
+
+      // Éxito
+      var libroCreado = respuesta.data;
+      if (typeof limpiarFormulario === 'function') {
+        limpiarFormulario();
+      }
+      await pintarListado();
+      mostrarResultado(textoDeAlta(libroCreado), 'exito');
+      return true;
+
+    } catch (err) {
+      mostrarResultado(MENSAJE_FALLO + ' (' + err.message + ')', 'error');
+      return false;
+    } finally {
+      if (boton) {
+        boton.disabled = false;
+        boton.textContent = 'Registrar libro';
+      }
     }
-    mostrarResultado(textoDeAlta(registro), 'exito');
-    pintarListado();
-    return true;
   }
 
   window.Libreria.vistas.libros = {
@@ -119,14 +178,14 @@
       contenido.appendChild(nodoListado);
       fragmento.appendChild(contenido);
 
+      // Cargar listado inicial
       pintarListado();
 
       return fragmento;
     },
 
     /**
-     * Repinta solo el listado cuando cambia el store, sin tocar el formulario
-     * y sin duplicar nodos (RN-LIB-05).
+     * Repinta solo el listado cuando se solicita (tras alta exitosa).
      */
     alCambiarElStore: function () {
       return pintarListado();

@@ -1,15 +1,20 @@
 /*
- * Librería — Parcial 1.
+ * Librería — Global de Programación III.
  * Módulo: js/vistas/libros-formulario.js
- * Responsabilidad: armar el formulario de alta, leer sus valores y limpiarlo.
- * C-09: selectores desde los datos locales; «Sin clasificar» usa value="".
+ * Responsabilidad: armar el formulario de alta con selectores desde la API,
+ * leer sus valores, limpiarlo y enviar a POST /api/libros/.
+ *
+ * Carga asíncrona de editoriales, géneros y autores al montar la vista.
+ * Validación server-side: maneja 409 (conflicto ISBN) y 422 (validación).
  */
 (function () {
   'use strict';
+
   window.Libreria = window.Libreria || {};
 
   var CLASE_CONTROL = 'control';
   var CLASE_AUTORES = 'control vista-libros__autores';
+  var TEXTO_CARGANDO = 'Cargando opciones...';
 
   function crearCampo(id, etiqueta, control, ayuda) {
     var campo = document.createElement('div');
@@ -61,26 +66,25 @@
     return { control: control, campo: crearCampo(id, etiqueta, control, config.ayuda) };
   }
 
-  function opcionesEditoriales(datos) {
-    var opciones = [{ valor: '', texto: 'Elegí una editorial' }];
-    datos.listarEditoriales().forEach(function (editorial) {
-      opciones.push({ valor: editorial.id, texto: editorial.nombre });
+  function poblarSelect(control, opciones, mantenerValor) {
+    var valorActual = mantenerValor ? control.value : '';
+    while (control.firstChild) {
+      control.removeChild(control.firstChild);
+    }
+    (opciones || []).forEach(function (opcion) {
+      var item = document.createElement('option');
+      item.value = opcion.valor;
+      item.textContent = opcion.texto;
+      control.appendChild(item);
     });
-    return opciones;
+    if (valorActual) {
+      control.value = valorActual;
+    }
   }
 
-  function opcionesGeneros(datos) {
-    var opciones = [{ valor: '', texto: 'Sin clasificar' }];
-    datos.listarGeneros().forEach(function (genero) {
-      opciones.push({ valor: genero.id, texto: genero.nombre });
-    });
-    return opciones;
-  }
-
-  function opcionesAutores(datos) {
-    return datos.listarAutores().map(function (autor) {
-      return { valor: autor.id, texto: autor.nombre };
-    });
+  function mostrarCargando(control) {
+    poblarSelect(control, [{ valor: '', texto: TEXTO_CARGANDO }]);
+    control.disabled = true;
   }
 
   function valorDe(formulario, nombre) {
@@ -102,13 +106,17 @@
 
   function leer(formulario) {
     var generoId = valorDe(formulario, 'generoId');
+    var autores = autoresSeleccionados(formulario);
     return {
       titulo: valorDe(formulario, 'titulo'),
       isbn: valorDe(formulario, 'isbn'),
       precio: valorDe(formulario, 'precio'),
-      editorialId: valorDe(formulario, 'editorialId'),
-      generoId: generoId === '' ? null : generoId,
-      autorIds: autoresSeleccionados(formulario)
+      stock_inicial: 0,
+      editorialId: parseInt(valorDe(formulario, 'editorialId'), 10) || null,
+      generoId: generoId === '' ? null : parseInt(generoId, 10),
+      autorIds: autores.map(function (id, index) {
+        return { autor_id: parseInt(id, 10), rol: 'autor', orden: index + 1 };
+      })
     };
   }
 
@@ -125,11 +133,65 @@
     }
   }
 
-  function armarFormulario(datos, alEnviar) {
+  function deshabilitarControles(formulario, deshabilitar) {
+    var controles = formulario.querySelectorAll('input, select, button');
+    Array.prototype.forEach.call(controles, function (c) {
+      c.disabled = deshabilitar;
+    });
+  }
+
+  async function cargarOpciones(formulario) {
+    var selEditorial = formulario.querySelector('[name="editorialId"]');
+    var selGenero = formulario.querySelector('[name="generoId"]');
+    var selAutores = formulario.querySelector('[name="autorIds"]');
+
+    if (selEditorial) mostrarCargando(selEditorial);
+    if (selGenero) mostrarCargando(selGenero);
+    if (selAutores) mostrarCargando(selAutores);
+
+    try {
+      // Cargar en paralelo
+      var [respEd, respGen, respAut] = await Promise.all([
+        window.Libreria.api.listarEditoriales(),
+        window.Libreria.api.listarGeneros(),
+        window.Libreria.api.listarAutores ? window.Libreria.api.listarAutores() : Promise.resolve({ ok: true, data: { items: [] } })
+      ]);
+
+      if (respEd.ok && selEditorial) {
+        var optsEd = [{ valor: '', texto: 'Elegí una editorial' }];
+        (respEd.data.items || respEd.data || []).forEach(function (e) {
+          optsEd.push({ valor: e.id, texto: e.nombre });
+        });
+        poblarSelect(selEditorial, optsEd);
+      }
+
+      if (respGen.ok && selGenero) {
+        var optsGen = [{ valor: '', texto: 'Sin clasificar' }];
+        (respGen.data.items || respGen.data || []).forEach(function (g) {
+          optsGen.push({ valor: g.id, texto: g.nombre });
+        });
+        poblarSelect(selGenero, optsGen);
+      }
+
+      if (respAut.ok && selAutores) {
+        var optsAut = [];
+        (respAut.data.items || respAut.data || []).forEach(function (a) {
+          optsAut.push({ valor: a.id, texto: a.nombre });
+        });
+        poblarSelect(selAutores, optsAut, true);
+        if (selAutores) {
+          selAutores.setAttribute('size', String(Math.max(3, Math.min(optsAut.length || 3, 6))));
+        }
+      }
+
+    } catch (err) {
+      console.error('Error cargando opciones:', err);
+    }
+  }
+
+  function armarFormulario(alEnviar) {
     var formulario = document.createElement('form');
     formulario.className = 'formulario vista-libros__formulario';
-    // Los atributos HTML quedan como barrera declarativa; la validación con
-    // mensajes por campo la resuelve validarLibro() en el submit.
     formulario.setAttribute('novalidate', '');
 
     var titulo = document.createElement('h2');
@@ -142,16 +204,18 @@
     formulario.appendChild(crearEntrada('libro-precio', 'precio', 'Precio', 'number', true, [
       ['min', '0.01'], ['step', '0.01'], ['inputmode', 'decimal']
     ]).campo);
-    formulario.appendChild(crearSelect('libro-editorial', 'editorialId', 'Editorial',
-      opcionesEditoriales(datos), { requerido: true }).campo);
-    formulario.appendChild(crearSelect('libro-genero', 'generoId', 'Género',
-      opcionesGeneros(datos), {}).campo);
 
-    var autores = opcionesAutores(datos);
-    formulario.appendChild(crearSelect('libro-autores', 'autorIds', 'Autores', autores, {
+    // Selectores vacíos iniciales; se poblarán con API
+    formulario.appendChild(crearSelect('libro-editorial', 'editorialId', 'Editorial',
+      [{ valor: '', texto: TEXTO_CARGANDO }], { requerido: true }).campo);
+    formulario.appendChild(crearSelect('libro-genero', 'generoId', 'Género',
+      [{ valor: '', texto: TEXTO_CARGANDO }], {}).campo);
+
+    var autoresPlaceholder = [{ valor: '', texto: TEXTO_CARGANDO }];
+    formulario.appendChild(crearSelect('libro-autores', 'autorIds', 'Autores', autoresPlaceholder, {
       multiple: true,
       requerido: true,
-      tamano: Math.max(3, Math.min(autores.length || 3, 6)),
+      tamano: 3,
       ayuda: 'Usá Ctrl (o Cmd) para elegir más de un autor.'
     }).campo);
 
@@ -164,22 +228,61 @@
     acciones.appendChild(boton);
     formulario.appendChild(acciones);
 
-    formulario.addEventListener('submit', function (evento) {
+    formulario.addEventListener('submit', async function (evento) {
       evento.preventDefault();
-      if (typeof alEnviar === 'function') { alEnviar(leer(formulario), formulario, evento); }
+      if (typeof alEnviar === 'function') {
+        await alEnviar(leer(formulario), formulario, evento);
+      }
     });
+
+    // Cargar opciones al montar
+    setTimeout(function () { cargarOpciones(formulario); }, 0);
+
     return formulario;
+  }
+
+  var nodoRegion = null;
+  var nodoListado = null;
+  var nodoMensaje = null;
+
+  function quitarMensaje() {
+    if (nodoMensaje && nodoMensaje.parentNode) {
+      nodoMensaje.parentNode.removeChild(nodoMensaje);
+    }
+    nodoMensaje = null;
+  }
+
+  function mostrarResultado(texto, tipo) {
+    quitarMensaje();
+    if (!nodoRegion) return null;
+    nodoMensaje = window.Libreria.ui.mostrarMensaje(nodoRegion, texto, tipo);
+    return nodoMensaje;
+  }
+
+  async function pintarListado() {
+    if (!nodoListado) return false;
+    while (nodoListado.firstChild) {
+      nodoListado.removeChild(nodoListado.firstChild);
+    }
+    nodoListado.appendChild(await window.Libreria.librosListado.crear());
+    return true;
   }
 
   window.Libreria.librosFormulario = {
     crear: function (opciones) {
       var ajustes = opciones || {};
-      var formulario = armarFormulario(window.Libreria.datos, ajustes.alEnviar);
+      var formulario = armarFormulario(ajustes.alEnviar);
       return {
         formulario: formulario,
         leer: function () { return leer(formulario); },
         limpiar: function () { limpiar(formulario); }
       };
     }
+  };
+
+  // Exponer para que libros.js pueda refrescar el listado
+  window.Libreria.librosFormulario.refrescarListado = function (region, listado) {
+    nodoRegion = region;
+    nodoListado = listado;
   };
 }());

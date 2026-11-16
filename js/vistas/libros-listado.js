@@ -1,15 +1,13 @@
 /*
- * Librería — Parcial 1.
+ * Librería — Global de Programación III.
  * Módulo: js/vistas/libros-listado.js
- * Responsabilidad: construir la tabla de libros registrados a partir del
- * store, resolviendo editorial, género y autores por id.
+ * Responsabilidad: construir la tabla de libros registrados usando la API.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria.
  *
- * C-09: el listado no edita ni borra (IN-07); un libro sin género muestra
- * «Sin clasificar» y las relaciones inexistentes no rompen la tabla
- * (RN-DAT-04, RN-DAT-05).
+ * Usa GET /api/libros/ para obtener la lista con datos relacionados.
+ * Un libro sin género muestra «Sin clasificar».
  */
 (function () {
   'use strict';
@@ -26,29 +24,23 @@
   }
 
   function nombreEditorial(libro) {
-    var datos = window.Libreria.datos;
-    var editorial = datos ? datos.obtenerEditorial(libro.editorialId) : null;
-    var nombre = editorial ? texto(editorial.nombre).trim() : '';
+    var nombre = libro.editorial_nombre ? texto(libro.editorial_nombre).trim() : '';
     return nombre === '' ? TEXTO_SIN_EDITORIAL : nombre;
   }
 
   function nombreGenero(libro) {
-    if (!libro.generoId) {
+    if (!libro.genero_nombre) {
       return TEXTO_SIN_GENERO;
     }
-    var datos = window.Libreria.datos;
-    var genero = datos ? datos.obtenerGenero(libro.generoId) : null;
-    var nombre = genero ? texto(genero.nombre).trim() : '';
+    var nombre = texto(libro.genero_nombre).trim();
     return nombre === '' ? TEXTO_SIN_GENERO : nombre;
   }
 
   function nombresAutores(libro) {
-    var datos = window.Libreria.datos;
-    var ids = Array.isArray(libro.autorIds) ? libro.autorIds : [];
-    var nombres = ids
-      .map(function (id) {
-        var autor = datos ? datos.obtenerAutor(id) : null;
-        return autor ? texto(autor.nombre).trim() : '';
+    var autores = Array.isArray(libro.autores) ? libro.autores : [];
+    var nombres = autores
+      .map(function (a) {
+        return a && a.autor_nombre ? texto(a.autor_nombre).trim() : '';
       })
       .filter(function (nombre) {
         return nombre !== '';
@@ -69,11 +61,9 @@
 
   window.Libreria.librosListado = {
     /**
-     * Devuelve un fragmento con el título del listado y la tabla de libros.
-     * La tabla sale del store ordenado por título (SU-02) y trae su estado
-     * vacío cuando no hay libros.
+     * Devuelve un fragmento con el título del listado y la tabla de libros desde la API.
      */
-    crear: function () {
+    crear: async function () {
       var fragmento = document.createDocumentFragment();
 
       var titulo = document.createElement('h2');
@@ -81,13 +71,42 @@
       titulo.textContent = 'Libros registrados';
       fragmento.appendChild(titulo);
 
-      var libros = window.Libreria.datos.listarLibros();
-      fragmento.appendChild(
-        window.Libreria.ui.crearTabla(ENCABEZADOS, libros.map(fila), {
-          claseTabla: 'tabla tabla-libros',
-          vacia: 'Todavía no hay libros registrados.'
-        })
-      );
+      // Cargar desde API
+      var contenedorTabla = document.createElement('div');
+      fragmento.appendChild(contenedorTabla);
+
+      window.Libreria.api.mostrarCargando(contenedorTabla);
+
+      try {
+        var respuesta = await window.Libreria.api.listarLibros({ page: 1, size: 100 });
+        window.Libreria.api.ocultarCargando(contenedorTabla);
+
+        if (!respuesta.ok) {
+          throw new Error(respuesta.mensaje || 'Error al cargar listado');
+        }
+
+        var libros = respuesta.data.items || [];
+
+        if (libros.length === 0) {
+          var vacio = document.createElement('p');
+          vacio.className = 'tabla__vacio';
+          vacio.textContent = 'Todavía no hay libros registrados.';
+          contenedorTabla.appendChild(vacio);
+        } else {
+          contenedorTabla.appendChild(
+            window.Libreria.ui.crearTabla(ENCABEZADOS, libros.map(fila), {
+              claseTabla: 'tabla tabla-libros',
+              vacia: 'Todavía no hay libros registrados.'
+            })
+          );
+        }
+      } catch (err) {
+        window.Libreria.api.ocultarCargando(contenedorTabla);
+        var error = document.createElement('p');
+        error.className = 'tabla__error';
+        error.textContent = 'No se pudo cargar el listado: ' + err.message;
+        contenedorTabla.appendChild(error);
+      }
 
       return fragmento;
     }

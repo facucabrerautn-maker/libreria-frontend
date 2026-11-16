@@ -1,17 +1,15 @@
 /*
- * Librería — Parcial 1.
+ * Librería — Global de Programación III.
  * Módulo: js/vistas/clientes.js
  * Responsabilidad: render y eventos de la vista Clientes: alta, validación,
- * mensajes y listado de clientes registrados.
+ * mensajes y listado de clientes registrados usando la API.
  *
  * Variante de enlace: scripts clásicos con IIFE. El módulo publica su contrato
  * en el namespace único window.Libreria, dentro de Libreria.vistas.
  *
- * C-10: el submit se intercepta con preventDefault y valida con validarCliente();
- * si hay errores no se escribe nada y cada error queda junto a su control. El
- * alta solo usa el store, que notifica y persiste solo (RN-CLI-03, RN-EX-04).
- * alCambiarElStore() repinta únicamente el listado, sin perder lo escrito en el
- * formulario ni duplicar nodos.
+ * El submit se intercepta con preventDefault, valida y llama a POST /api/clientes/.
+ * Si hay errores (409 email duplicado, 422 validación), se muestran junto a su control.
+ * El alta exitosa limpia el formulario, informa y refresca el listado.
  */
 (function () {
   'use strict';
@@ -47,15 +45,15 @@
     return nodoMensaje;
   }
 
-  /** Repinta solo el listado desde el store, sin duplicar nodos. */
-  function pintarListado() {
+  /** Repinta solo el listado, sin duplicar nodos. */
+  async function pintarListado() {
     if (!nodoListado) {
       return false;
     }
     while (nodoListado.firstChild) {
       nodoListado.removeChild(nodoListado.firstChild);
     }
-    nodoListado.appendChild(window.Libreria.clientesListado.crear());
+    nodoListado.appendChild(await window.Libreria.clientesListado.crear());
     return true;
   }
 
@@ -65,15 +63,23 @@
 
   /**
    * Maneja el envío: limpia errores previos, valida y, si todo pasa, da de
-   * alta en el store, limpia el formulario, informa y refresca el listado.
+   * alta en la API, limpia el formulario, informa y refresca el listado.
    */
-  function alEnviar(contexto, formulario) {
+  async function alEnviar(contexto, formulario, evento) {
     var ui = window.Libreria.ui;
-    var datos = window.Libreria.datos;
 
     ui.limpiarErrores(nodoRegion, formulario);
 
-    var errores = window.Libreria.validaciones.validarCliente(datos, contexto);
+    // Validación client-side básica
+    var errores = [];
+    var nombre = contexto.nombre ? contexto.nombre.trim() : '';
+    var email = contexto.email ? contexto.email.trim() : '';
+    if (!nombre) errores.push({ campo: 'nombre', mensaje: 'El nombre es obligatorio.' });
+    if (!email) errores.push({ campo: 'email', mensaje: 'El email es obligatorio.' });
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errores.push({ campo: 'email', mensaje: 'El email no tiene un formato válido.' });
+    }
+
     if (errores.length > 0) {
       quitarMensaje();
       ui.mostrarErrores(nodoRegion, errores, { formulario: formulario });
@@ -81,18 +87,60 @@
       return false;
     }
 
-    var registro = datos.agregarCliente(contexto);
-    if (!registro) {
-      mostrarResultado(MENSAJE_FALLO, 'error');
-      return false;
+    // Deshabilitar botón durante envío
+    var boton = formulario.querySelector('button[type="submit"]');
+    if (boton) {
+      boton.disabled = true;
+      boton.textContent = 'Registrando...';
     }
 
-    if (limpiarFormulario) {
-      limpiarFormulario();
+    try {
+      var data = { nombre: nombre, email: email };
+      var respuesta = await window.Libreria.api.crearCliente(data);
+
+      if (!respuesta.ok) {
+        if (respuesta.status === 409) {
+          ui.mostrarErrores(nodoRegion, [{
+            campo: 'email',
+            mensaje: respuesta.mensaje || 'Ya existe un cliente con ese email.'
+          }], { formulario: formulario });
+        } else if (respuesta.status === 422) {
+          var det = respuesta.data;
+          if (det && det.detail && Array.isArray(det.detail)) {
+            var errs = det.detail.map(function (d) {
+              return { campo: d.loc && d.loc[d.loc.length - 1] || 'formulario', mensaje: d.msg };
+            });
+            ui.mostrarErrores(nodoRegion, errs, { formulario: formulario });
+          } else {
+            ui.mostrarErrores(nodoRegion, [{ campo: 'formulario', mensaje: respuesta.mensaje || 'Datos inválidos.' }], { formulario: formulario });
+          }
+        } else {
+          throw new Error(respuesta.mensaje || 'Error al registrar cliente');
+        }
+        ui.enfocarPrimerError(formulario);
+        return false;
+      }
+
+      // Éxito
+      var clienteCreado = respuesta.data;
+      // Limpiar formulario usando la función del formulario creado
+      if (typeof limpiarFormulario === 'function') {
+        limpiarFormulario();
+      }
+
+      await pintarListado();
+      mostrarResultado(textoDeAlta(clienteCreado), 'exito');
+      return true;
+
+    } catch (err) {
+      mostrarResultado(MENSAJE_FALLO + ' (' + err.message + ')', 'error');
+      return false;
+    } finally {
+      if (boton) {
+        boton.disabled = false;
+        boton.textContent = 'Registrar cliente';
+      }
     }
-    mostrarResultado(textoDeAlta(registro), 'exito');
-    pintarListado();
-    return true;
   }
 
   window.Libreria.vistas.clientes = {
@@ -119,14 +167,14 @@
       contenido.appendChild(nodoListado);
       fragmento.appendChild(contenido);
 
+      // Cargar listado inicial
       pintarListado();
 
       return fragmento;
     },
 
     /**
-     * Repinta solo el listado cuando cambia el store, sin tocar el formulario
-     * y sin duplicar nodos (RN-CLI-03).
+     * Repinta solo el listado cuando se solicita.
      */
     alCambiarElStore: function () {
       return pintarListado();
